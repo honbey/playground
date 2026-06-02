@@ -1,28 +1,68 @@
 #!/usr/bin/env python3
 
+import argparse
 import json
-import os
 import random
 import sys
 import time
 from datetime import datetime, timezone
 
 import requests
+import yaml
 
-CHERY_ACCESS_TOKEN = os.getenv("CHERY_ACCESS_TOKEN", "XXXXXX")
+
+def push2gotify(title: str, msg: str, url: str, token: str, priority: int = 5):
+    """
+    Push notification to Gotify.
+
+    Params:
+    title (str): notification title
+    message (str): notification message
+    url (str): Gotify server URL
+    token (str): Gotify token
+    priority (int): notification priority
+    """
+
+    url = f"{url}/message"
+    headers = {"X-Gotify-Key": token, "Content-Type": "application/json"}
+    data = {"title": title, "message": msg, "priority": priority}
+
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        print('{"gotify":"Push update notification to Gotify..."}')
+    except requests.exceptions.RequestException as e:
+        print(
+            f'{"gotify":"[error]: Push notification to Gotify failed. error msg: {e}"}'
+        )
 
 
 def main():
     # 处理命令行参数
-    force_mode = len(sys.argv) > 1 and sys.argv[1] == "force"
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-f",
+        "--force",
+        required=False,
+        action="store_true",
+        default=False,
+        help="Don't wait, enforce this script",
+        dest="force",
+    )
+    parser.add_argument("config", type=str, help="The path of config file")
+    args = parser.parse_args()
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+        token = cfg.get("token")
+        gotify = cfg.get("gotify")
+
+    # 脚本执行时间 (UTC)
+    start_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # 非强制模式时随机等待
-    if not force_mode:
-        wait_seconds = random.randint(300, 1499)  # 300~1499秒
+    if not args.force:
+        wait_seconds = random.randint(30, 1499)  # 30~1499秒
         time.sleep(wait_seconds)
-
-    # 记录请求开始时间 (UTC)
-    start_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # 公共请求头
     common_headers = {
@@ -41,7 +81,16 @@ def main():
     }
 
     # 构建URL
-    url = f"https/mobile-consumer-sapp.chery.cn/web/event/trigger?access_token={CHERY_ACCESS_TOKEN}"
+    url = (
+        f"https://mobile-consumer-sapp.chery.cn/web/event/trigger?access_token={token}"
+    )
+
+    result = {
+        "time": start_time,
+    }
+    message = ""
+    notify = False
+    exit_code = 0
 
     try:
         # 发送OPTIONS请求 (预检请求)
@@ -59,7 +108,7 @@ def main():
         post_headers = common_headers.copy()
         post_headers.update(
             {
-                "Authorization": f"Bearer {CHERY_ACCESS_TOKEN}",
+                "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
                 "Accept-Language": "zh-CN,zh",
             }
@@ -72,25 +121,59 @@ def main():
 
         # 记录响应处理时间 (UTC)
         check_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result.update(
+            {
+                "check_time": check_time,
+            }
+        )
 
         # 解析JSON响应
         try:
             res_data = response.json()
-            result = {
-                "time": start_time,
-                "check_time": check_time,
-                "status": res_data.get("status"),
-                "message": res_data.get("message"),
-            }
-            print(json.dumps(result, separators=(",", ":")))
+            status, message = res_data.get("status"), res_data.get("message")
+            result.update(
+                {
+                    "status": status,
+                    "message": message,
+                }
+            )
+            notify = True if message != "操作成功" else False
         except ValueError:
-            # JSON解析失败时输出原始响应
-            print(response.text)
-            sys.exit(0)
+            # JSON解析失败时输出错误信息
+            message = response.text
+            result.update(
+                {
+                    "status": response.status_code,  # pyright: ignore
+                    "message": f"Parse failed: {message}",
+                }
+            )
+            notify = True
+        print(json.dumps(result, separators=(",", ":"), ensure_ascii=False))
 
     except requests.exceptions.RequestException as e:
-        print(f"Request failed: {str(e)}", file=sys.stderr)
-        sys.exit(1)
+        message = str(e)
+        result.update(
+            {
+                "check_time": start_time,
+                "status": 999,  # pyright: ignore
+                "message": f"Request failed: {message}",
+            }
+        )
+        print(
+            json.dumps(result, separators=(",", ":"), ensure_ascii=False),
+            file=sys.stderr,
+        )
+        notify = True
+        exit_code = 1
+    if notify:
+        push2gotify(
+            "Chery Auto Checkout",
+            f"Checkout failed! Msg: {message}",
+            gotify.get("url"),
+            gotify.get("token"),
+            priority=8,
+        )
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
