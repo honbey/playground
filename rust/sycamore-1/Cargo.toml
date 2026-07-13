@@ -1,0 +1,8 @@
+[package]
+name = "sycamore-1"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+sycamore = "0.9"
+console_error_panic_hook = "0.1"
